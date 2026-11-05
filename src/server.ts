@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, mkdir, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { join, resolve, extname } from 'node:path';
 import { loadDetector, parseNumbers, type Detector } from 'lmfpd-sdk';
 import { options, type Options } from './config';
@@ -10,7 +10,8 @@ import { normalizeChatStream } from './sse';
 import { serviceIdentity, VERSION } from './service-identity';
 import { createJob, runJob } from './detector';
 import { demoModels, demoHistory, demoAnalysis } from './demo';
-import type { Job, Model, Provenance, TargetResult, RunConfig } from './types';
+import { AUTORUN_FILE, AutoRunScheduler, normalizeAutoRun, scheduleAutoRun } from './scheduler';
+import type { AutoRunConfig, Job, Model, Provenance, TargetResult, RunConfig } from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -46,6 +47,43 @@ export async function startServer(input: Options = {}) {
   let closed = false,
     creatingJob = false;
   let modelCount: number | undefined;
+  let autorun: AutoRunConfig = scheduleAutoRun({
+    enabled: opt.autoIntervalMinutes > 0 && !!opt.autoModels.trim(),
+    intervalMinutes: Math.min(10080, Math.max(0, Math.round(Number(opt.autoIntervalMinutes) || 0))),
+    models: opt.autoModels
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean)
+      .slice(0, 24),
+    effort: opt.autoEffort,
+  });
+  const autorunPath = join(opt.dataDir, AUTORUN_FILE);
+  const saveAutorun = async () => {
+    await mkdir(opt.dataDir, { recursive: true, mode: 0o700 });
+    const temp = `${autorunPath}.tmp`;
+    await writeFile(temp, JSON.stringify(autorun), { mode: 0o600 });
+    await rename(temp, autorunPath);
+  };
+  const scheduler = new AutoRunScheduler(
+    () => autorun,
+    async (next) => {
+      autorun = next;
+      await saveAutorun();
+    },
+    () => {
+      void (async () => {
+        if (closed || active.size || creatingJob) return void scheduler.reschedule();
+        if (!autorun.enabled || !autorun.models.length) return;
+        try {
+          await startAutoJob();
+        } catch {
+          /* Failed cycles simply wait for the next scheduled tick. */
+        } finally {
+          await scheduler.markRan();
+        }
+      })();
+    },
+  );
   const emit = (job: Job) => {
     for (const fn of listeners.get(job.id) || []) fn(job);
   };
@@ -206,6 +244,16 @@ export async function startServer(input: Options = {}) {
         const reader = responseBody.getReader();
         let lastEmit = 0;
         const decoder = new TextDecoder();
+        // Record TTFT and throughput once the stream settles (completed or not).
+        const finalizeSample = () => {
+          const sample = result.samples[index];
+          if (!sample || sample.state === 'failed') return;
+          sample.ttft_ms = sample.first_byte_ms;
+          if (sample.first_byte_ms == null || !text.length) return;
+          const genMs = Math.max(1, Date.now() - startedAt - sample.first_byte_ms);
+          sample.gen_ms = genMs;
+          sample.tokens_per_s = Math.round(((text.length / 4) * 1000) / genMs);
+        };
         const recordChunk = (bytes: Uint8Array) => {
           const sample = result.samples[index];
           if (!sample) return;
@@ -246,6 +294,7 @@ export async function startServer(input: Options = {}) {
               const chunk = await reader.read();
               if (chunk.done) {
                 ended = true;
+                finalizeSample();
                 await finish();
                 out.close();
               } else {
@@ -256,6 +305,7 @@ export async function startServer(input: Options = {}) {
               await reader.cancel().catch(() => {});
               if (!ended) {
                 ended = true;
+                finalizeSample();
                 await finish();
               }
               out.error(e);
@@ -326,6 +376,9 @@ export async function startServer(input: Options = {}) {
               text: '137, 42, 291, 65, 188',
               raw_text: '137, 42, 291, 65, 188 (illustrative excerpt)',
               count: job.challenges[i].expected_count,
+              ttft_ms: 650,
+              gen_ms: 2600,
+              tokens_per_s: 42,
             };
             r.provenance[i] = {
               session: `demo-${i}`,
@@ -400,6 +453,52 @@ export async function startServer(input: Options = {}) {
       await persist(job);
     }
   }
+  /** Shared job creation for the page API and the scheduled auto-runner. */
+  const startJob = async (config: RunConfig): Promise<Job> => {
+    if (active.size || creatingJob)
+      throw Object.assign(new Error('A detection batch is already running.'), { status: 409 });
+    if (store.jobs.size >= 200)
+      throw Object.assign(
+        new Error('History limit reached (200 batches). Export and delete older batches first.'),
+        { status: 409 },
+      );
+    creatingJob = true;
+    try {
+      await catalog();
+      const engine = await ensureDetector();
+      if (!opt.demo && !engine)
+        throw Object.assign(new Error(bankError || 'Reference data unavailable'), { status: 503 });
+      const job = createJob(config, models, opt.demo ? 'Demo reference data' : engine!.builtAt);
+      if (opt.demo) job.demo = true;
+      store.jobs.set(job.id, job);
+      await store.save(job);
+      void launch(job, engine).catch((e) => {
+        job.state = 'failed';
+        job.error = `Could not save task history: ${gateway.redact(e)}`;
+        emit(job);
+      });
+      return job;
+    } finally {
+      creatingJob = false;
+    }
+  };
+  const startAutoJob = async (): Promise<Job> => {
+    if (!autorun.enabled || !autorun.models.length) throw new Error('Auto-run is disabled.');
+    await catalog();
+    const known = new Set(models.map((m) => m.id));
+    const targets = autorun.models.filter((m) => known.has(m)).map((model) => ({ model }));
+    if (!targets.length) throw new Error('None of the auto-run models are in the current catalog.');
+    return startJob({
+      targets,
+      api: 'auto',
+      effort: autorun.effort,
+      serviceTier: 'default',
+      strict: false,
+      targetParallel: 2,
+      sampleParallel: 3,
+      deadlineSeconds: 300,
+    });
+  };
   const uiDir =
     opt.uiDir || resolve(import.meta.dir, import.meta.dir.endsWith('/src') ? '../dist/ui' : 'ui');
   let server: ReturnType<typeof Bun.serve>;
@@ -426,7 +525,7 @@ export async function startServer(input: Options = {}) {
         const cors: Record<string, string> = {
           'access-control-allow-origin': origin || '*',
           'access-control-allow-headers': 'Authorization, Content-Type',
-          'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
+          'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
           vary: 'Origin',
           'cache-control': 'no-store',
         };
@@ -458,50 +557,35 @@ export async function startServer(input: Options = {}) {
                   reachable: opt.demo || !catalogError,
                   ...(catalogError ? { error: catalogError } : {}),
                 },
+                autorun,
                 ...(bankError ? { bankError } : {}),
               });
             } else if (path === '/api/models' && req.method === 'GET')
               response = json(await catalog());
             else if (path === '/api/jobs' && req.method === 'GET') response = json(store.list());
             else if (path === '/api/jobs' && req.method === 'POST') {
-              if (active.size || creatingJob)
-                return json({ error: 'A detection batch is already running.' }, 409, cors);
-              creatingJob = true;
-              try {
-                if (store.jobs.size >= 200)
-                  return json(
-                    {
-                      error:
-                        'History limit reached (200 batches). Export and delete older batches first.',
-                    },
-                    409,
-                    cors,
-                  );
-                if (Number(req.headers.get('content-length') || 0) > 16384)
-                  return json({ error: 'Request too large' }, 413, cors);
-                const text = await boundedText(req, 16384);
-                const config = JSON.parse(text) as RunConfig;
-                await catalog();
-                const engine = await ensureDetector();
-                if (!opt.demo && !engine)
-                  return json({ error: bankError || 'Reference data unavailable' }, 503, cors);
-                const job = createJob(
-                  config,
-                  models,
-                  opt.demo ? 'Demo reference data' : engine!.builtAt,
-                );
-                if (opt.demo) job.demo = true;
-                store.jobs.set(job.id, job);
-                await store.save(job);
-                void launch(job, engine).catch((e) => {
-                  job.state = 'failed';
-                  job.error = `Could not save task history: ${gateway.redact(e)}`;
-                  emit(job);
-                });
-                response = json(job, 202);
-              } finally {
-                creatingJob = false;
-              }
+              if (Number(req.headers.get('content-length') || 0) > 16384)
+                return json({ error: 'Request too large' }, 413, cors);
+              const text = await boundedText(req, 16384);
+              const config = JSON.parse(text) as RunConfig;
+              response = json(await startJob(config), 202);
+            } else if (path === '/api/autorun' && req.method === 'GET') response = json(autorun);
+            else if (path === '/api/autorun' && req.method === 'PUT') {
+              if (Number(req.headers.get('content-length') || 0) > 4096)
+                return json({ error: 'Request too large' }, 413, cors);
+              const next = normalizeAutoRun(JSON.parse(await boundedText(req, 4096)));
+              if (!next) return json({ error: 'Invalid auto-run settings.' }, 400, cors);
+              await catalog();
+              const known = new Set(models.map((m) => m.id));
+              next.models = next.models.filter((m) => known.has(m));
+              autorun = scheduleAutoRun(next);
+              await saveAutorun();
+              scheduler.reschedule();
+              response = json(autorun);
+            } else if (path === '/api/autorun/run' && req.method === 'POST') {
+              const job = await startAutoJob();
+              await scheduler.markRan();
+              response = json(job, 202);
             } else if (path === '/api/reload-data' && req.method === 'POST') {
               await ensureDetector(true);
               response = json({
@@ -663,9 +747,14 @@ export async function startServer(input: Options = {}) {
             },
           });
         } catch (e) {
+          const status = (e as { status?: number }).status;
           return json(
             { error: gateway.redact(e) },
-            e instanceof BodyTooLargeError ? 413 : 400,
+            e instanceof BodyTooLargeError
+              ? 413
+              : status && status >= 400 && status < 500
+                ? status
+                : 400,
             cors,
           );
         }
@@ -682,6 +771,14 @@ export async function startServer(input: Options = {}) {
       const job = demoHistory();
       store.jobs.set(job.id, job);
     }
+    // A persisted schedule beats the manifest defaults; ignore damaged files.
+    try {
+      const saved = normalizeAutoRun(JSON.parse(await readFile(autorunPath, 'utf8')));
+      if (saved) autorun = scheduleAutoRun(saved);
+    } catch {
+      /* First run, or the settings file was unreadable: keep the defaults. */
+    }
+    scheduler.reschedule();
   })();
   try {
     await initialized;
@@ -696,6 +793,7 @@ export async function startServer(input: Options = {}) {
     async close() {
       if (closed) return;
       closed = true;
+      scheduler.stop();
       for (const c of active.values()) c.abort(new Error('Plugin service stopped'));
       while (active.size) await Bun.sleep(20);
       await store.flush();

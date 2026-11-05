@@ -8,6 +8,12 @@ export interface Options {
   bankSource?: string;
   demo?: boolean;
   uiDir?: string;
+  /** Scheduled auto-detection interval in minutes; 0 disables (default). */
+  autoIntervalMinutes?: number;
+  /** Comma-separated model IDs for scheduled auto-detection. */
+  autoModels?: string;
+  /** Reasoning effort used by scheduled auto-detection. */
+  autoEffort?: string;
 }
 export function options(
   input: Options = {},
@@ -43,5 +49,10 @@ export function options(
     bankSource: input.bankSource || process.env.MAGPIE_FINGERPRINT_BANK_SOURCE,
     demo: input.demo ?? false,
     uiDir: input.uiDir,
+    autoIntervalMinutes:
+      input.autoIntervalMinutes ??
+      Number(process.env.MAGPIE_FINGERPRINT_AUTO_INTERVAL_MINUTES || 0),
+    autoModels: input.autoModels ?? process.env.MAGPIE_FINGERPRINT_AUTO_MODELS ?? '',
+    autoEffort: input.autoEffort ?? process.env.MAGPIE_FINGERPRINT_AUTO_EFFORT ?? '',
   };
 }

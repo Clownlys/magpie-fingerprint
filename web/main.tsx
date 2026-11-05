@@ -44,6 +44,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 const zh = {
+  overview: '总览',
   detect: '指纹检测',
   history: '检测历史',
   settings: '运行设置',
@@ -77,8 +78,29 @@ const zh = {
   failed: '失败',
   queued: '排队中',
   cancelled: '已取消',
+  autorun: '定时检测',
+  autorunEnable: '启用定时检测',
+  autorunInterval: '间隔（分钟）',
+  autorunModels: '检测模型（逗号分隔）',
+  autorunApply: '保存设置',
+  autorunSaved: '定时设置已保存',
+  autorunNext: '下次检测',
+  autorunLast: '上次检测',
+  autorunNever: '未启用',
+  runNow: '立即检测',
+  ttft: '首字',
+  tokensPerS: 'token/s',
+  verdict: '指纹结论',
+  confidence: '置信度',
+  lastRun: '最近检测',
+  trend: '对比上次',
+  trendUp: '置信度上升',
+  trendDown: '置信度下降',
+  trendFlat: '基本持平',
+  noData: '未检测',
 };
 const en = {
+  overview: 'Overview',
   detect: 'Fingerprint',
   history: 'History',
   settings: 'Run settings',
@@ -112,6 +134,26 @@ const en = {
   failed: 'Failed',
   queued: 'Queued',
   cancelled: 'Cancelled',
+  autorun: 'Auto-run',
+  autorunEnable: 'Enable scheduled detection',
+  autorunInterval: 'Interval (minutes)',
+  autorunModels: 'Models (comma-separated)',
+  autorunApply: 'Save settings',
+  autorunSaved: 'Auto-run settings saved',
+  autorunNext: 'Next run',
+  autorunLast: 'Last run',
+  autorunNever: 'Disabled',
+  runNow: 'Run now',
+  ttft: 'TTFT',
+  tokensPerS: 'tok/s',
+  verdict: 'Verdict',
+  confidence: 'Confidence',
+  lastRun: 'Last check',
+  trend: 'vs previous',
+  trendUp: 'Confidence up',
+  trendDown: 'Confidence down',
+  trendFlat: 'Stable',
+  noData: 'Not tested',
 };
 
 const terminal = (state: string) => !['queued', 'running'].includes(state);
@@ -159,7 +201,7 @@ function App() {
   });
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [error, setError] = useState('');
-  const [section, setSection] = useState<'detect' | 'history'>('detect');
+  const [section, setSection] = useState<'overview' | 'detect' | 'history'>('overview');
   const [job, setJob] = useState<Job | null>(null);
   const [history, setHistory] = useState<Job[]>([]);
   const [query, setQuery] = useState('');
@@ -376,6 +418,34 @@ function App() {
       setError(String(e));
     }
   };
+  // One-model quick detection from the overview dashboard.
+  const runOne = async (model: string) => {
+    if (starting || history.some((j) => !terminal(j.state))) return;
+    setStarting(true);
+    setError('');
+    try {
+      const j = await api<Job>('api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          targets: [{ model }],
+          api: 'auto',
+          effort: '',
+          serviceTier: 'default',
+          strict: false,
+          targetParallel: 1,
+          sampleParallel: 3,
+          deadlineSeconds: 300,
+        } satisfies RunConfig),
+      });
+      setJob(j);
+      setHistory((h) => [j, ...h.filter((x) => x.id !== j.id)]);
+      setExpanded(j.results[0]?.id || null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  };
   return (
     <div className={`app-shell ${embedded ? 'embedded' : 'standalone'}`}>
       {!embedded && <h1 className="standalone-title">Fingerprint</h1>}
@@ -387,19 +457,36 @@ function App() {
           onKeyDown={(e) => {
             if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
               e.preventDefault();
+              const order: Array<'overview' | 'detect' | 'history'> = [
+                'overview',
+                'detect',
+                'history',
+              ];
+              const index = order.indexOf(section);
               const next =
                 e.key === 'Home'
-                  ? 'detect'
+                  ? order[0]
                   : e.key === 'End'
-                    ? 'history'
-                    : section === 'detect'
-                      ? 'history'
-                      : 'detect';
+                    ? order[order.length - 1]
+                    : order[
+                        (index + (e.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length
+                      ];
               setSection(next);
               document.getElementById(`tab-${next}`)?.focus();
             }
           }}
         >
+          <button
+            className={`opt ${section === 'overview' ? 'on' : ''}`}
+            id="tab-overview"
+            role="tab"
+            aria-selected={section === 'overview'}
+            aria-controls="fingerprint-panel"
+            tabIndex={section === 'overview' ? 0 : -1}
+            onClick={() => setSection('overview')}
+          >
+            {t.overview}
+          </button>
           <button
             className={`opt ${section === 'detect' ? 'on' : ''}`}
             id="tab-detect"
@@ -498,6 +585,20 @@ function App() {
               setSection('detect');
             }}
             onDelete={deleteJob}
+          />
+        ) : section === 'overview' ? (
+          <Overview
+            history={history}
+            models={models}
+            autorun={boot?.autorun}
+            t={t}
+            lang={lang}
+            busy={starting || history.some((j) => !terminal(j.state))}
+            expanded={expanded}
+            setExpanded={setExpanded}
+            onRunModel={runOne}
+            onError={setError}
+            onSaved={() => load()}
           />
         ) : (
           <>
@@ -1051,6 +1152,18 @@ function ResultRow({
                   {sample.count}
                   <small> / {sample.expected_count}</small>
                 </strong>
+                <div className="sample-metrics">
+                  {sample.first_byte_ms != null && (
+                    <span>
+                      {t.ttft} {sample.first_byte_ms}ms
+                    </span>
+                  )}
+                  {sample.tokens_per_s != null && (
+                    <span>
+                      {sample.tokens_per_s} {t.tokensPerS}
+                    </span>
+                  )}
+                </div>
                 <code>
                   {r.provenance[i]?.model || (t === zh ? '路由待确认' : 'Route unverified')}
                 </code>
@@ -1067,6 +1180,268 @@ function ResultRow({
           </details>
         </div>
       )}
+    </div>
+  );
+}
+const avgNum = (xs: (number | null | undefined)[]) => {
+  const v = (xs || []).filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
+const metric = (value: number | null, digits = 0, unit = '') =>
+  value == null ? '—' : `${value.toFixed(digits)}${unit}`;
+
+function Overview({
+  history,
+  models,
+  autorun,
+  t,
+  lang,
+  busy,
+  expanded,
+  setExpanded,
+  onRunModel,
+  onError,
+  onSaved,
+}: {
+  history: Job[];
+  models: Model[];
+  autorun?: Bootstrap['autorun'];
+  t: any;
+  lang: 'zh' | 'en';
+  busy: boolean;
+  expanded: string | null;
+  setExpanded: (x: string | null) => void;
+  onRunModel: (model: string) => void;
+  onError: (message: string) => void;
+  onSaved: () => void;
+}) {
+  const knownIds = useMemo(() => new Set(models.map((m) => m.id)), [models]);
+  const rows = useMemo(() => {
+    const map = new Map<string, { job: Job; result: TargetResult }[]>();
+    for (const j of history) {
+      if (!terminal(j.state)) continue;
+      for (const r of j.results) {
+        const list = map.get(r.target.model) || [];
+        list.push({ job: j, result: r });
+        map.set(r.target.model, list);
+      }
+    }
+    return [...map.entries()]
+      .map(([model, list]) => ({
+        model,
+        current: list[0],
+        previous: list[1]?.result ?? null,
+      }))
+      .sort((a, b) => a.model.localeCompare(b.model));
+  }, [history]);
+  // Draft stays null until the first edit so late-loading settings show through.
+  const [draft, setDraft] = useState<{
+    enabled: boolean;
+    intervalMinutes: number;
+    modelsText: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const view = draft ?? {
+    enabled: autorun?.enabled ?? false,
+    intervalMinutes: autorun?.intervalMinutes ?? 60,
+    modelsText: autorun?.models.join(', ') ?? '',
+  };
+  const modelIds = view.modelsText
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const unknown = modelIds.filter((m) => !knownIds.has(m));
+  const saveAutorun = async () => {
+    if (saving) return;
+    setSaving(true);
+    onError('');
+    try {
+      await api('api/autorun', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: view.enabled,
+          intervalMinutes: Number(view.intervalMinutes),
+          models: modelIds,
+          effort: '',
+        }),
+      });
+      setDraft(null);
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+      onSaved();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const confidence = (r: TargetResult | undefined) =>
+    r?.analysis?.results?.[0]?.probability ?? null;
+  return (
+    <div className="overview-page">
+      <section className="panel autorun-panel">
+        <div className="panel-title">
+          <div>
+            <h2>{t.autorun}</h2>
+          </div>
+          {savedFlash && <span className="status completed">{t.autorunSaved}</span>}
+        </div>
+        <div className="autorun-grid">
+          <div className="switch-row">
+            <div>
+              <strong>{t.autorunEnable}</strong>
+              <small>
+                {autorun?.nextRunAt
+                  ? `${t.autorunNext}: ${new Date(autorun.nextRunAt).toLocaleString()}`
+                  : t.autorunNever}
+                {autorun?.lastRunAt
+                  ? ` · ${t.autorunLast}: ${new Date(autorun.lastRunAt).toLocaleString()}`
+                  : ''}
+              </small>
+            </div>
+            <button
+              className={`lib-switch switch ${view.enabled ? 'on' : ''}`}
+              role="switch"
+              aria-label={t.autorunEnable}
+              aria-checked={view.enabled}
+              onClick={() => setDraft({ ...view, enabled: !view.enabled })}
+            >
+              <i />
+            </button>
+          </div>
+          <label>
+            {t.autorunInterval}
+            <input
+              type="number"
+              min="0"
+              max="10080"
+              value={view.intervalMinutes}
+              aria-invalid={
+                !(Number(view.intervalMinutes) >= 0 && Number(view.intervalMinutes) <= 10080)
+              }
+              onChange={(e) => setDraft({ ...view, intervalMinutes: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            {t.autorunModels}
+            <input
+              value={view.modelsText}
+              placeholder="provider/model-id, provider/model-id"
+              onChange={(e) => setDraft({ ...view, modelsText: e.target.value })}
+            />
+            {unknown.length > 0 && (
+              <small role="alert">
+                {lang === 'zh' ? '目录中不存在：' : 'Not in catalog: '}
+                {unknown.join(', ')}
+              </small>
+            )}
+          </label>
+          <button
+            className="text primary primary-button"
+            disabled={
+              saving ||
+              !Number.isInteger(Number(view.intervalMinutes)) ||
+              Number(view.intervalMinutes) < 0 ||
+              Number(view.intervalMinutes) > 10080 ||
+              unknown.length > 0
+            }
+            onClick={saveAutorun}
+          >
+            {t.autorunApply}
+          </button>
+        </div>
+      </section>
+      <div className="list history-list overview-list">
+        {rows.length ? (
+          rows.map(({ model, current, previous }) => {
+            const r = current.result;
+            const conf = confidence(r);
+            const prevConf = confidence(previous);
+            const trend =
+              conf == null || prevConf == null
+                ? null
+                : conf - prevConf > 0.02
+                  ? 'up'
+                  : conf - prevConf < -0.02
+                    ? 'down'
+                    : 'flat';
+            const ttft = avgNum(r.samples.map((s) => s.first_byte_ms));
+            const tokps = avgNum(r.samples.map((s) => s.tokens_per_s));
+            return (
+              <div className="overview-row" key={model}>
+                <div className="overview-summary">
+                  <button
+                    className="overview-toggle"
+                    aria-expanded={expanded === model}
+                    onClick={() => setExpanded(expanded === model ? null : model)}
+                  >
+                    <span className="result-model">
+                      <strong>{model}</strong>
+                      <small>{new Date(current.job.createdAt).toLocaleString()}</small>
+                    </span>
+                    <span className="result-label">
+                      {r.analysis?.prediction_name || stateLabel(t, r.state)}
+                      <small>
+                        {r.state === 'completed' && r.error
+                          ? r.error
+                          : r.state === 'completed'
+                            ? stateLabel(t, r.analysis?.decision || r.state)
+                            : stateLabel(t, r.state)}
+                      </small>
+                    </span>
+                    <span className="overview-metric" title={t.ttft}>
+                      {t.ttft} {metric(ttft, 0, 'ms')}
+                    </span>
+                    <span className="overview-metric" title={t.tokensPerS}>
+                      {t.tokensPerS} {metric(tokps, 0)}
+                    </span>
+                    <span
+                      className={`overview-metric trend-${trend || 'none'}`}
+                      title={
+                        trend === 'up'
+                          ? t.trendUp
+                          : trend === 'down'
+                            ? t.trendDown
+                            : trend === 'flat'
+                              ? t.trendFlat
+                              : t.trend
+                      }
+                    >
+                      {trend === 'up' ? '▲' : trend === 'down' ? '▼' : trend === 'flat' ? '≈' : '·'}{' '}
+                      {metric(conf == null ? null : conf * 100, 1, '%')}
+                    </span>
+                    <CaretDown size={17} className={expanded === model ? 'rotate' : ''} />
+                  </button>
+                  <button
+                    className="ghost-button overview-run"
+                    disabled={busy}
+                    title={t.runNow}
+                    onClick={() => onRunModel(model)}
+                  >
+                    <Play size={14} weight="fill" />
+                    {t.runNow}
+                  </button>
+                </div>
+                {expanded === model && (
+                  <ResultRow
+                    r={r}
+                    demo={current.job.demo}
+                    t={t}
+                    expanded
+                    toggle={() => setExpanded(null)}
+                  />
+                )}
+              </div>
+            );
+          })
+        ) : (
+          <div className="empty-history">
+            <ClockCounterClockwise size={32} />
+            <p>{t.noData}</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

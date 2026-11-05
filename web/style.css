@@ -911,3 +911,105 @@ pre {
     transition: none !important;
   }
 }
+
+/* Overview dashboard */
+.overview-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.autorun-panel .autorun-grid {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 160px);
+  gap: 12px 16px;
+  align-items: start;
+}
+.autorun-panel .autorun-grid label:nth-of-type(2) {
+  grid-column: 1 / -1;
+}
+.autorun-panel .autorun-grid > .primary-button {
+  justify-self: end;
+}
+.overview-list {
+  display: flex;
+  flex-direction: column;
+}
+.overview-row {
+  border-bottom: 1px solid var(--line, rgba(128, 128, 128, 0.2));
+}
+.overview-row:last-child {
+  border-bottom: none;
+}
+.overview-row .result-card {
+  margin: 0 12px 10px;
+}
+.overview-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+}
+.overview-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.overview-toggle:hover {
+  opacity: 0.85;
+}
+.overview-toggle .result-model {
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+}
+.overview-toggle .result-label {
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+.overview-toggle > svg {
+  flex: none;
+  transition: transform 0.15s;
+}
+.overview-metric {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted, rgba(128, 128, 128, 0.9));
+  min-width: 72px;
+}
+.overview-metric.trend-up {
+  color: var(--ok, #2e8b57);
+}
+.overview-metric.trend-down {
+  color: var(--bad, #c0392b);
+}
+.overview-run {
+  flex: none;
+}
+.sample-metrics {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted, rgba(128, 128, 128, 0.9));
+}
+@media (max-width: 720px) {
+  .autorun-panel .autorun-grid {
+    grid-template-columns: 1fr;
+  }
+  .overview-toggle {
+    flex-wrap: wrap;
+  }
+}
