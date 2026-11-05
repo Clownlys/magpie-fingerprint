@@ -11,7 +11,25 @@ import { serviceIdentity, VERSION } from './service-identity';
 import { createJob, runJob } from './detector';
 import { demoModels, demoHistory, demoAnalysis } from './demo';
 import { AUTORUN_FILE, AutoRunScheduler, normalizeAutoRun, scheduleAutoRun } from './scheduler';
-import type { AutoRunConfig, Job, Model, Provenance, TargetResult, RunConfig } from './types';
+import {
+  MILK_ATTEMPTS,
+  QUALITY_IDS,
+  QUALITY_MAX_TOKENS,
+  QUALITY_PROMPTS,
+  QUALITY_TIMEOUT_SECONDS,
+  findQualityPrompt,
+  grade,
+  repeatCoverage,
+} from './quality';
+import type {
+  AutoRunConfig,
+  Job,
+  Model,
+  ProbeResult,
+  Provenance,
+  TargetResult,
+  RunConfig,
+} from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -73,7 +91,7 @@ export async function startServer(input: Options = {}) {
     () => {
       void (async () => {
         if (closed || active.size || creatingJob) return void scheduler.reschedule();
-        if (!autorun.enabled || !autorun.models.length) return;
+        if (!autorun.enabled) return;
         try {
           await startAutoJob();
         } catch {
@@ -465,6 +483,17 @@ export async function startServer(input: Options = {}) {
     creatingJob = true;
     try {
       await catalog();
+      if (Array.isArray(config.questions) && config.questions.length > 0) {
+        const job = createQualityJob(config, models);
+        store.jobs.set(job.id, job);
+        await store.save(job);
+        void runQualityJob(job).catch((e) => {
+          job.state = 'failed';
+          job.error = `Could not save task history: ${gateway.redact(e)}`;
+          emit(job);
+        });
+        return job;
+      }
       const engine = await ensureDetector();
       if (!opt.demo && !engine)
         throw Object.assign(new Error(bankError || 'Reference data unavailable'), { status: 503 });
@@ -483,22 +512,292 @@ export async function startServer(input: Options = {}) {
     }
   };
   const startAutoJob = async (): Promise<Job> => {
-    if (!autorun.enabled || !autorun.models.length) throw new Error('Auto-run is disabled.');
+    if (!autorun.enabled) throw new Error('Auto-run is disabled.');
     await catalog();
     const known = new Set(models.map((m) => m.id));
-    const targets = autorun.models.filter((m) => known.has(m)).map((model) => ({ model }));
-    if (!targets.length) throw new Error('None of the auto-run models are in the current catalog.');
-    return startJob({
-      targets,
-      api: 'auto',
-      effort: autorun.effort,
-      serviceTier: 'default',
-      strict: false,
-      targetParallel: 2,
-      sampleParallel: 3,
-      deadlineSeconds: 300,
-    });
+    let last: Job | undefined;
+    if (autorun.models.length) {
+      const targets = autorun.models.filter((m) => known.has(m)).map((model) => ({ model }));
+      if (!targets.length && !autorun.quality?.questions.length)
+        throw new Error('None of the auto-run models are in the current catalog.');
+      last = await startJob({
+        targets,
+        api: 'auto',
+        effort: autorun.effort,
+        serviceTier: 'default',
+        strict: false,
+        targetParallel: 2,
+        sampleParallel: 3,
+        deadlineSeconds: 300,
+      });
+    }
+    if (autorun.quality?.enabled && autorun.quality.questions.length) {
+      const targets = autorun.models.filter((m) => known.has(m)).map((model) => ({ model }));
+      if (targets.length)
+        last = await startJob({
+          targets,
+          api: 'auto',
+          effort: '',
+          serviceTier: 'default',
+          strict: false,
+          targetParallel: 2,
+          sampleParallel: 1,
+          deadlineSeconds: 600,
+          questions: autorun.quality.questions,
+        });
+    }
+    if (!last) throw new Error('Auto-run is disabled.');
+    return last;
   };
+  /** Probe-suite job creation; no reference bank or challenges involved. */
+  function createQualityJob(config: RunConfig, catalog: Model[]): Job {
+    const questions = [...new Set(config.questions || [])];
+    if (!questions.length || questions.length > QUALITY_IDS.length)
+      throw Object.assign(new Error('questions must list 1 to 7 probe ids'), { status: 400 });
+    for (const id of questions)
+      if (!findQualityPrompt(id))
+        throw Object.assign(new Error(`unknown quality question: ${id}`), { status: 400 });
+    if (!Array.isArray(config.targets) || config.targets.length < 1 || config.targets.length > 24)
+      throw Object.assign(new Error('targets must contain 1 to 24 items'), { status: 400 });
+    const keys = config.targets.map((t) => `${t.model}\0${t.account ?? ''}`);
+    if (new Set(keys).size !== keys.length)
+      throw Object.assign(new Error('duplicate targets are not allowed'), { status: 400 });
+    for (const target of config.targets) {
+      if (typeof target.model !== 'string' || !target.model.trim())
+        throw Object.assign(new Error('target model must be text'), { status: 400 });
+      if (!catalog.some((candidate) => candidate.id === target.model))
+        throw Object.assign(new Error(`unknown model: ${target.model}`), { status: 400 });
+    }
+    return {
+      id: uuid(),
+      createdAt: new Date().toISOString(),
+      state: 'queued',
+      kind: 'quality',
+      config: { ...config, questions },
+      challenges: [],
+      results: config.targets.map((target, index) => ({
+        id: `target-${index + 1}-${uuid()}`,
+        target,
+        api: 'chat_completions',
+        state: 'queued',
+        samples: [],
+        provenance: [],
+        analysis: null,
+        error: null,
+        probes: questions.map((id) => ({
+          id,
+          question: findQualityPrompt(id)!.text,
+          answer: '',
+          verdict: 'running' as const,
+          error: null,
+          ttftMs: null,
+          genMs: null,
+          tokensPerS: null,
+          attempt: 0,
+        })),
+      })),
+      bank: { builtAt: 'Behavioral probes', sdk: 'quality' },
+    };
+  }
+  /** One streaming chat round-trip through the gateway with TTFT/tokens-per-s. */
+  const askQualityOnce = async (
+    model: string,
+    prompt: string,
+    session: string,
+    controller: AbortController,
+    onDelta: (answer: string) => void,
+  ): Promise<{ answer: string; ttftMs: number | null; genMs: number | null; tokensPerS: number | null }> => {
+    const startedAt = Date.now();
+    const upstream = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: gateway.headers({
+        'content-type': 'application/json',
+        'X-Magpie-Session': session,
+      }),
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        stream: true,
+        stream_options: { include_usage: true },
+        max_tokens: QUALITY_MAX_TOKENS,
+      }),
+      signal: controller.signal,
+      redirect: 'error',
+      timeout: false,
+    });
+    if (!upstream.ok || !upstream.body)
+      throw new Error(
+        upstream.ok ? 'Empty response body' : `Magpie returned HTTP ${upstream.status}.`,
+      );
+    let answer = '',
+      ttftMs: number | null = null,
+      firstAt = 0,
+      lineBuffer = '';
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (ttftMs == null) {
+          ttftMs = Date.now() - startedAt;
+          firstAt = Date.now();
+        }
+        lineBuffer += decoder.decode(chunk.value, { stream: true });
+        let newline: number;
+        while ((newline = lineBuffer.indexOf('\n')) >= 0) {
+          const line = lineBuffer.slice(0, newline).trim();
+          lineBuffer = lineBuffer.slice(newline + 1);
+          if (!line.startsWith('data:')) continue;
+          try {
+            const event = JSON.parse(line.slice(5));
+            const delta = event.choices?.[0]?.delta?.content;
+            if (typeof delta === 'string') {
+              answer += delta;
+              onDelta(answer);
+            }
+          } catch {
+            /* SSE metadata and [DONE] are not answer text. */
+          }
+        }
+        if (answer.length > 400000) throw new Error('Probe answer exceeded the size limit.');
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    const genMs = ttftMs == null ? null : Math.max(1, Date.now() - firstAt);
+    const tokensPerS =
+      genMs && answer.length ? Math.round(((answer.length / 4) * 1000) / genMs) : null;
+    return { answer, ttftMs, genMs, tokensPerS };
+  };
+  async function runQualityJob(job: Job) {
+    const controller = new AbortController();
+    active.set(job.id, controller);
+    const timer = setTimeout(
+      () => controller.abort(new Error('Job deadline exceeded')),
+      job.config.deadlineSeconds * 1000,
+    );
+    job.state = 'running';
+    await persist(job);
+    try {
+      if (opt.demo) {
+        job.demo = true;
+        for (const r of job.results) {
+          r.state = 'running';
+          for (const probe of r.probes || []) {
+            if (controller.signal.aborted) break;
+            probe.attempt = 1;
+            emit(job);
+            await Bun.sleep(300);
+            Object.assign(probe, {
+              answer:
+                probe.id === 'milk'
+                  ? 'The average adult height is **46.24 inches**.'
+                  : '(Demo answer; no measurement.)',
+              verdict: probe.id === 'milk' ? 'passed' : 'manual',
+              error: null,
+              ttftMs: 650,
+              genMs: 2100,
+              tokensPerS: 48,
+              repeatHits: probe.id === 'repeat' ? repeatCoverage('') : undefined,
+            } satisfies Partial<ProbeResult>);
+            emit(job);
+          }
+          r.state = controller.signal.aborted ? 'cancelled' : 'completed';
+          await persist(job);
+          if (controller.signal.aborted) break;
+        }
+        job.state = controller.signal.aborted ? 'cancelled' : 'completed';
+        job.finishedAt = new Date().toISOString();
+      } else {
+        let cursor = 0;
+        const worker = async () => {
+          while (true) {
+            const index = cursor++;
+            if (index >= job.results.length) return;
+            const result = job.results[index];
+            result.state = 'running';
+            await persist(job);
+            for (const probe of result.probes || []) {
+              if (controller.signal.aborted) {
+                probe.verdict = 'unavailable';
+                continue;
+              }
+              const prompt = findQualityPrompt(probe.id)!;
+              const attempts = prompt.automatic ? MILK_ATTEMPTS : 1;
+              for (let attempt = 1; attempt <= attempts; attempt++) {
+                probe.attempt = attempt;
+                probe.answer = '';
+                probe.verdict = 'running';
+                probe.error = null;
+                await persist(job);
+                try {
+                  const outcome = await askQualityOnce(
+                    result.target.model,
+                    prompt.text,
+                    `qp-${job.id}-${probe.id}-${attempt}`,
+                    controller,
+                    (answer) => {
+                      probe.answer = answer;
+                      emit(job);
+                    },
+                  );
+                  Object.assign(probe, outcome, { error: null });
+                  if (prompt.automatic) {
+                    const verdict = grade(probe.id, probe.answer);
+                    if (verdict === 'passed' || attempt === attempts) {
+                      probe.verdict = verdict;
+                      probe.needsReview = verdict === 'failed';
+                    } else continue; // One independent retest before review.
+                  } else {
+                    probe.verdict = 'manual';
+                    if (probe.id === 'repeat') probe.repeatHits = repeatCoverage(probe.answer);
+                  }
+                  break;
+                } catch (e) {
+                  probe.error = gateway.redact(e);
+                  probe.verdict = 'unavailable';
+                  if (prompt.automatic && attempt < attempts && !controller.signal.aborted)
+                    continue;
+                  break;
+                }
+              }
+              await persist(job);
+            }
+            result.state = controller.signal.aborted
+              ? 'cancelled'
+              : (result.probes || []).some((p) => p.verdict === 'unavailable')
+                ? 'failed'
+                : 'completed';
+            await persist(job);
+          }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(Math.max(1, job.config.targetParallel), job.results.length) },
+            worker,
+          ),
+        );
+        job.finishedAt = new Date().toISOString();
+        job.state = controller.signal.aborted
+          ? 'cancelled'
+          : job.results.some((r) => r.state === 'failed')
+            ? 'failed'
+            : 'completed';
+      }
+    } catch (e) {
+      job.state = controller.signal.aborted ? 'cancelled' : 'failed';
+      job.error = gateway.redact(e);
+      job.finishedAt = new Date().toISOString();
+    } finally {
+      clearTimeout(timer);
+      active.delete(job.id);
+      for (const r of job.results)
+        for (const p of r.probes || [])
+          if (p.verdict === 'running') p.verdict = 'unavailable';
+      await persist(job);
+    }
+  }
   const uiDir =
     opt.uiDir || resolve(import.meta.dir, import.meta.dir.endsWith('/src') ? '../dist/ui' : 'ui');
   let server: ReturnType<typeof Bun.serve>;
@@ -558,6 +857,11 @@ export async function startServer(input: Options = {}) {
                   ...(catalogError ? { error: catalogError } : {}),
                 },
                 autorun,
+                qualityPrompts: QUALITY_PROMPTS.map(({ id, name, automatic }) => ({
+                  id,
+                  name,
+                  automatic,
+                })),
                 ...(bankError ? { bankError } : {}),
               });
             } else if (path === '/api/models' && req.method === 'GET')
@@ -593,11 +897,37 @@ export async function startServer(input: Options = {}) {
                 error: bankError || undefined,
               });
             } else {
-              const m = path.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|events|export))?$/);
+              const m = path.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|events|export|review))?$/);
               const job = m ? store.jobs.get(m[1]) : undefined;
               if (!job) return json({ error: 'Job not found' }, 404, cors);
               if (m![2] === 'cancel' && req.method === 'POST') {
                 active.get(job.id)?.abort(new Error('Cancelled by user'));
+                response = json(job);
+              } else if (m![2] === 'review' && req.method === 'POST') {
+                if (Number(req.headers.get('content-length') || 0) > 4096)
+                  return json({ error: 'Request too large' }, 413, cors);
+                const body = JSON.parse(await boundedText(req, 4096)) as {
+                  targetId?: string;
+                  probeIndex?: number;
+                  review?: string;
+                  note?: string;
+                };
+                const result = job.results.find((r) => r.id === body.targetId);
+                const probe =
+                  result?.probes?.[
+                    Number.isInteger(body.probeIndex) && body.probeIndex! >= 0
+                      ? body.probeIndex!
+                      : -1
+                  ];
+                if (!probe)
+                  return json({ error: 'Probe not found' }, 404, cors);
+                if (body.review !== 'accepted' && body.review !== 'rejected')
+                  return json({ error: 'review must be accepted or rejected' }, 400, cors);
+                probe.review = body.review;
+                probe.reviewNote =
+                  typeof body.note === 'string' ? body.note.slice(0, 2000) : undefined;
+                probe.reviewedAt = new Date().toISOString();
+                await persist(job);
                 response = json(job);
               } else if (m![2] === 'export' && req.method === 'GET')
                 response = new Response(

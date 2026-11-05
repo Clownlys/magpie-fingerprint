@@ -20,6 +20,8 @@ export interface AutoRunConfig {
   /** Model IDs to test each cycle; empty means never auto-run. */
   models: string[];
   effort: string;
+  /** Optional degradation probes appended to each scheduled cycle. */
+  quality?: { enabled: boolean; questions: string[] };
   lastRunAt?: string;
   nextRunAt?: string;
 }
@@ -49,6 +51,8 @@ export interface RunConfig {
   targetParallel: number;
   sampleParallel: number;
   deadlineSeconds: number;
+  /** Quality-probe job: question IDs to run; presence switches the job kind. */
+  questions?: string[];
 }
 export interface Provenance {
   session: string;
@@ -60,6 +64,25 @@ export interface Provenance {
   mismatch?: boolean;
   streamNormalization?: 'chat-done-after-stop';
 }
+export type ProbeVerdict = 'running' | 'passed' | 'failed' | 'manual' | 'unavailable';
+export interface ProbeResult {
+  id: string;
+  question: string;
+  answer: string;
+  verdict: ProbeVerdict;
+  error?: string | null;
+  ttftMs?: number | null;
+  genMs?: number | null;
+  tokensPerS?: number | null;
+  attempt: number;
+  /** Automatic milk failures are retested; two failures need review. */
+  needsReview?: boolean;
+  /** Human review outcome for manual questions. */
+  review?: 'accepted' | 'rejected';
+  reviewNote?: string;
+  reviewedAt?: string;
+  repeatHits?: number;
+}
 export interface TargetResult {
   id: string;
   target: Target;
@@ -69,12 +92,15 @@ export interface TargetResult {
   provenance: Provenance[];
   analysis: Analysis | null;
   error: string | null;
+  probes?: ProbeResult[];
 }
 export interface Job {
   id: string;
   createdAt: string;
   finishedAt?: string;
   state: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
+  /** Absent means fingerprint (legacy jobs); 'quality' is the probe suite. */
+  kind?: 'fingerprint' | 'quality';
   config: RunConfig;
   challenges: Challenge[];
   results: TargetResult[];
@@ -92,4 +118,5 @@ export interface Bootstrap {
   gateway: { url: string; reachable: boolean; error?: string };
   bankError?: string;
   autorun: AutoRunConfig;
+  qualityPrompts: { id: string; name: string; automatic: boolean }[];
 }

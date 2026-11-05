@@ -1,3 +1,4 @@
+import { QUALITY_IDS } from './quality';
 import type { AutoRunConfig } from './types';
 
 export const AUTORUN_FILE = 'autorun.json';
@@ -21,16 +22,30 @@ export function normalizeAutoRun(input: unknown): AutoRunConfig | null {
     ),
   ];
   const effort = typeof raw.effort === 'string' && raw.effort.length <= 64 ? raw.effort : '';
+  let quality: AutoRunConfig['quality'];
+  const rawQuality = (raw as Record<string, unknown>).quality;
+  if (typeof rawQuality === 'object' && rawQuality !== null) {
+    const q = rawQuality as Record<string, unknown>;
+    if (typeof q.enabled !== 'boolean') return null;
+    if (!Array.isArray(q.questions) || q.questions.length > QUALITY_IDS.length) return null;
+    const questions = [
+      ...new Set(q.questions.filter((id): id is string => typeof id === 'string')),
+    ];
+    if (questions.some((id) => !QUALITY_IDS.includes(id))) return null;
+    quality = { enabled: q.enabled, questions };
+  }
   return {
     enabled: raw.enabled,
     intervalMinutes: interval,
     models,
     effort,
+    ...(quality ? { quality } : {}),
   };
 }
 
 function nextRun(config: AutoRunConfig): string | undefined {
-  if (!config.enabled || !config.intervalMinutes || !config.models.length) return undefined;
+  const hasWork = config.models.length > 0 || !!config.quality?.questions.length;
+  if (!config.enabled || !config.intervalMinutes || !hasWork) return undefined;
   const base = config.lastRunAt ? Date.parse(config.lastRunAt) : Date.now();
   const from = Number.isFinite(base) ? base : Date.now();
   return new Date(from + config.intervalMinutes * 60_000).toISOString();
@@ -39,7 +54,10 @@ function nextRun(config: AutoRunConfig): string | undefined {
 /** Reconciles nextRunAt after a config or time change. */
 export function scheduleAutoRun(config: AutoRunConfig): AutoRunConfig {
   const next = { ...config };
-  const scheduled = next.enabled && next.intervalMinutes > 0 && next.models.length > 0;
+  const scheduled =
+    next.enabled &&
+    next.intervalMinutes > 0 &&
+    (next.models.length > 0 || !!next.quality?.questions.length);
   if (!scheduled) {
     delete next.nextRunAt;
     return next;
@@ -67,7 +85,8 @@ export class AutoRunScheduler {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     const config = this.read();
-    if (!config.enabled || !config.intervalMinutes || !config.models.length) return;
+    const hasWork = config.models.length > 0 || !!config.quality?.questions.length;
+    if (!config.enabled || !config.intervalMinutes || !hasWork) return;
     const due = config.nextRunAt ? Date.parse(config.nextRunAt) : this.now();
     const delay = Math.max(1000, (Number.isFinite(due) ? due : this.now()) - this.now());
     this.timer = setTimeout(() => {

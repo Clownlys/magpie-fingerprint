@@ -98,6 +98,26 @@ const zh = {
   trendDown: '置信度下降',
   trendFlat: '基本持平',
   noData: '未检测',
+  qualityTab: '降智速测',
+  fingerprintMode: '指纹检测',
+  qualityMode: '降智速测',
+  questions: '探针题目',
+  auto: '自动判分',
+  manual: '人工复核',
+  qualityIntro: '用行为探针快速判断模型是否降智；牛奶题为自动判分，其余需人工复核。',
+  probePassed: '通过',
+  probeFailed: '未通过',
+  probeManual: '待复核',
+  probeUnavailable: '不可用',
+  accepted: '复核通过',
+  rejected: '复核驳回',
+  reviewAccept: '通过',
+  reviewReject: '驳回',
+  repeatHits: '复述命中',
+  needsReview: '需复核',
+  answer: '回答原文',
+  quality: '降智',
+  autorunQuality: '定时降智速测',
 };
 const en = {
   overview: 'Overview',
@@ -154,6 +174,27 @@ const en = {
   trendDown: 'Confidence down',
   trendFlat: 'Stable',
   noData: 'Not tested',
+  qualityTab: 'Quality',
+  fingerprintMode: 'Fingerprint',
+  qualityMode: 'Quality probes',
+  questions: 'Probe questions',
+  auto: 'Auto-graded',
+  manual: 'Manual review',
+  qualityIntro:
+    'Behavioral probes for quick degradation checks; the milk puzzle is auto-graded, others need human review.',
+  probePassed: 'Passed',
+  probeFailed: 'Failed',
+  probeManual: 'Needs review',
+  probeUnavailable: 'Unavailable',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+  reviewAccept: 'Accept',
+  reviewReject: 'Reject',
+  repeatHits: 'Repeat hits',
+  needsReview: 'Needs review',
+  answer: 'Answer',
+  quality: 'Quality',
+  autorunQuality: 'Scheduled quality probes',
 };
 
 const terminal = (state: string) => !['queued', 'running'].includes(state);
@@ -218,6 +259,8 @@ function App() {
     deadlineSeconds: 300,
   } as any);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [detectMode, setDetectMode] = useState<'fingerprint' | 'quality'>('fingerprint');
+  const [qualityQs, setQualityQs] = useState<string[]>(['milk']);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const configValid =
@@ -344,7 +387,8 @@ function App() {
       selectedModels.every((model) => model.efforts.includes(effort)),
     ) || [];
   const effort = effortChoices.includes(config.effort) ? config.effort : '';
-  const estimate = selected.length * 3;
+  const estimate =
+    detectMode === 'quality' ? selected.length * qualityQs.length : selected.length * 3;
   const toggle = (id: string) =>
     setSelected((s) =>
       s.includes(id) ? s.filter((x) => x !== id) : s.length < 24 ? [...s, id] : s,
@@ -362,15 +406,17 @@ function App() {
     }
     setStarting(true);
     setError('');
+    const qualityMode = detectMode === 'quality';
     const cfg: RunConfig = {
       targets: selected.map((model) => ({ model, ...(account ? { account } : {}) })),
       api: config.api,
-      effort,
+      effort: qualityMode ? '' : effort,
       serviceTier: config.serviceTier,
       strict: config.strict,
       targetParallel: Number(config.targetParallel),
       sampleParallel: Number(config.sampleParallel),
-      deadlineSeconds: Number(config.deadlineSeconds),
+      deadlineSeconds: qualityMode ? 600 : Number(config.deadlineSeconds),
+      ...(qualityMode ? { questions: qualityQs } : {}),
     };
     try {
       const j = await api<Job>('api/jobs', { method: 'POST', body: JSON.stringify(cfg) });
@@ -381,6 +427,24 @@ function App() {
       setError(String(e));
     } finally {
       setStarting(false);
+    }
+  };
+  // Persist a human review verdict for a manual quality probe.
+  const reviewProbe = async (
+    jobId: string,
+    targetId: string,
+    probeIndex: number,
+    review: 'accepted' | 'rejected',
+  ) => {
+    try {
+      const x = await api<Job>(`api/jobs/${jobId}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ targetId, probeIndex, review }),
+      });
+      setJob((current) => (current?.id === x.id ? x : current));
+      setHistory((list) => list.map((j) => (j.id === x.id ? x : j)));
+    } catch (e) {
+      setError(String(e));
     }
   };
   const cancel = async () => {
@@ -419,7 +483,7 @@ function App() {
     }
   };
   // One-model quick detection from the overview dashboard.
-  const runOne = async (model: string) => {
+  const runOne = async (model: string, questions?: string[]) => {
     if (starting || history.some((j) => !terminal(j.state))) return;
     setStarting(true);
     setError('');
@@ -433,8 +497,9 @@ function App() {
           serviceTier: 'default',
           strict: false,
           targetParallel: 1,
-          sampleParallel: 3,
-          deadlineSeconds: 300,
+          sampleParallel: questions ? 1 : 3,
+          deadlineSeconds: questions ? 600 : 300,
+          ...(questions ? { questions } : {}),
         } satisfies RunConfig),
       });
       setJob(j);
@@ -591,6 +656,7 @@ function App() {
             history={history}
             models={models}
             autorun={boot?.autorun}
+            qualityPrompts={boot?.qualityPrompts}
             t={t}
             lang={lang}
             busy={starting || history.some((j) => !terminal(j.state))}
@@ -603,12 +669,28 @@ function App() {
         ) : (
           <>
             <div className="intro">
+              <nav className="segs mode-segs" aria-label={t.detect}>
+                <button
+                  className={`opt ${detectMode === 'fingerprint' ? 'on' : ''}`}
+                  onClick={() => setDetectMode('fingerprint')}
+                >
+                  {t.fingerprintMode}
+                </button>
+                <button
+                  className={`opt ${detectMode === 'quality' ? 'on' : ''}`}
+                  onClick={() => setDetectMode('quality')}
+                >
+                  {t.qualityMode}
+                </button>
+              </nav>
               <p>
-                {lang === 'zh'
-                  ? '选择模型，用同一组挑战比较响应指纹。'
-                  : 'Select models to compare their fingerprints with shared challenges.'}
+                {detectMode === 'quality'
+                  ? t.qualityIntro
+                  : lang === 'zh'
+                    ? '选择模型，用同一组挑战比较响应指纹。'
+                    : 'Select models to compare their fingerprints with shared challenges.'}
               </p>
-              {boot?.bank && (
+              {detectMode === 'fingerprint' && boot?.bank && (
                 <span title={boot.bank.builtAt}>
                   {lang === 'zh' ? '参考库' : 'Reference bank'} · {boot.bank.modelCount ?? '—'}{' '}
                   {lang === 'zh' ? '个模型' : 'models'}
@@ -733,6 +815,33 @@ function App() {
                       ))}
                   </datalist>
                 </label>
+                {detectMode === 'quality' && (
+                  <div className="quality-picker">
+                    {(boot?.qualityPrompts || []).map((p) => (
+                      <label className="row model model-row" key={p.id}>
+                        <input
+                          type="checkbox"
+                          aria-label={p.name}
+                          checked={qualityQs.includes(p.id)}
+                          onChange={() =>
+                            setQualityQs((qs) =>
+                              qs.includes(p.id) ? qs.filter((x) => x !== p.id) : [...qs, p.id],
+                            )
+                          }
+                        />
+                        <span className="who model-name">
+                          <strong className="name">{p.name}</strong>
+                          <small className="sub">{p.id}</small>
+                        </span>
+                        <span className="model-endpoint">
+                          {p.automatic ? t.auto : t.manual}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {detectMode === 'fingerprint' && (
+                  <>
                 <div className="two-col">
                   <label>
                     {t.protocol}
@@ -839,11 +948,17 @@ function App() {
                     )}
                   </div>
                 )}
+                  </>
+                )}
                 <div className="run-footer">
                   <div>
                     <span>{t.estimated}</span>
                     <strong>{estimate}</strong>
-                    <small>3 × {selected.length || 0}</small>
+                    <small>
+                      {detectMode === 'quality'
+                        ? `${qualityQs.length} × ${selected.length || 0}`
+                        : `3 × ${selected.length || 0}`}
+                    </small>
                   </div>
                   <button
                     className="text primary primary-button"
@@ -851,7 +966,8 @@ function App() {
                       !selected.length ||
                       !configValid ||
                       starting ||
-                      !boot?.bank ||
+                      (detectMode === 'fingerprint' && !boot?.bank) ||
+                      (detectMode === 'quality' && !qualityQs.length) ||
                       history.some((j) => !terminal(j.state))
                     }
                     onClick={start}
@@ -870,6 +986,7 @@ function App() {
                 setExpanded={setExpanded}
                 onCancel={cancel}
                 onDownload={download}
+                onReview={reviewProbe}
               />
             )}
           </>
@@ -886,6 +1003,7 @@ function JobView({
   setExpanded,
   onCancel,
   onDownload,
+  onReview,
 }: {
   job: Job;
   t: any;
@@ -893,15 +1011,27 @@ function JobView({
   setExpanded: (x: string | null) => void;
   onCancel: () => void;
   onDownload: () => void;
+  onReview?: (
+    jobId: string,
+    targetId: string,
+    probeIndex: number,
+    review: 'accepted' | 'rejected',
+  ) => void;
 }) {
   const [showExport, setShowExport] = useState(false);
   const [copied, setCopied] = useState(false);
   const exportArea = useRef<HTMLTextAreaElement>(null);
   const total = job.results.length || job.config.targets.length;
   const done = job.results.filter((r) => r.state === 'completed').length;
-  const finishedSamples = job.results
-    .flatMap((r) => r.samples)
-    .filter((s) => !['queued', 'waiting', 'streaming'].includes(s.state)).length;
+  const isQuality = job.kind === 'quality';
+  const finishedSamples = isQuality
+    ? job.results
+        .flatMap((r) => r.probes || [])
+        .filter((p) => p.verdict !== 'running').length
+    : job.results
+        .flatMap((r) => r.samples)
+        .filter((s) => !['queued', 'waiting', 'streaming'].includes(s.state)).length;
+  const probeTotal = total * (job.config.questions?.length || 1);
   const json = JSON.stringify({ schema: 'magpie-fingerprint/v1', ...job }, null, 2);
   const copy = async () => {
     try {
@@ -941,14 +1071,19 @@ function JobView({
       <div className="progress-track">
         <i
           style={{
-            width: `${total ? Math.round((finishedSamples / (total * 3)) * 100) : 0}%`,
+            width: `${
+              (isQuality ? probeTotal : total * 3)
+                ? Math.round((finishedSamples / (isQuality ? probeTotal : total * 3)) * 100)
+                : 0
+            }%`,
           }}
         />
       </div>
       <div className="result-meta">
         <span>
-          {finishedSamples}/{total * 3} {t === zh ? '条采样已结束' : 'samples finished'} · {done}/
-          {total} {t === zh ? '个模型完成' : 'models completed'}
+          {finishedSamples}/{isQuality ? probeTotal : total * 3}{' '}
+          {t === zh ? (isQuality ? '条探针已结束' : '条采样已结束') : isQuality ? 'probes finished' : 'samples finished'} ·{' '}
+          {done}/{total} {t === zh ? '个模型完成' : 'models completed'}
         </span>
         <span>
           {job.demo && <b className="demo-chip">{t.demo}</b>}
@@ -956,10 +1091,14 @@ function JobView({
         </span>
       </div>
       <div className="run-context">
-        <span title={job.bank.builtAt}>
-          {t === zh ? '参考库' : 'Reference'}: {job.bank.builtAt.slice(0, 19)}
-        </span>
-        <span>SDK {job.bank.sdk}</span>
+        {!isQuality && (
+          <>
+            <span title={job.bank.builtAt}>
+              {t === zh ? '参考库' : 'Reference'}: {job.bank.builtAt.slice(0, 19)}
+            </span>
+            <span>SDK {job.bank.sdk}</span>
+          </>
+        )}
         <span>
           {job.config.effort || 'default'} · {job.config.serviceTier}
         </span>
@@ -969,6 +1108,7 @@ function JobView({
           {job.error}
         </div>
       )}
+      {!isQuality && (
       <details className="challenge-details">
         <summary>
           {t === zh ? '本批次共享的 3 个挑战' : 'Three challenges shared across this batch'}
@@ -982,12 +1122,16 @@ function JobView({
           </div>
         ))}
       </details>
+      )}
       {job.results.map((r: TargetResult) => (
         <ResultRow
           key={r.id}
           r={r}
           demo={job.demo}
           t={t}
+          kind={job.kind === 'quality' ? 'quality' : 'fingerprint'}
+          jobId={job.id}
+          onReview={onReview}
           expanded={expanded === r.id}
           toggle={() => setExpanded(expanded === r.id ? null : r.id)}
         />
@@ -1035,22 +1179,150 @@ function JobView({
     </section>
   );
 }
+const QUALITY_NAMES: Record<string, { zh: string; en: string }> = {
+  milk: { zh: '牛奶推理', en: 'Milk reasoning' },
+  repeat: { zh: '逐字复述', en: 'Verbatim repeat' },
+  japan: { zh: '日本首相', en: 'Japan PM' },
+  person: { zh: '人物知识', en: 'Person knowledge' },
+  html: { zh: 'HTML 动画', en: 'HTML animation' },
+  svg: { zh: 'SVG 创作', en: 'SVG drawing' },
+  map: { zh: '世界海陆地图', en: 'World land/sea map' },
+};
 function ResultRow({
   r,
   demo,
   t,
+  kind,
+  jobId,
+  onReview,
   expanded,
   toggle,
 }: {
   r: TargetResult;
   demo?: boolean;
   t: any;
+  kind?: 'fingerprint' | 'quality';
+  jobId?: string;
+  onReview?: (
+    jobId: string,
+    targetId: string,
+    probeIndex: number,
+    review: 'accepted' | 'rejected',
+  ) => void;
   expanded: boolean;
   toggle: () => void;
 }) {
   const analysis = r.analysis;
   const candidates = analysis?.results || [];
   const decision = analysis?.decision;
+  if (kind === 'quality')
+    return (
+      <div className={`result-card ${r.state}`}>
+        <button
+          className="result-summary"
+          aria-expanded={expanded}
+          aria-controls={`result-${r.id}`}
+          onClick={toggle}
+        >
+          <span className="result-icon">
+            {r.state === 'completed' ? (
+              <CheckCircle size={20} />
+            ) : r.state === 'failed' ? (
+              <WarningCircle size={20} />
+            ) : (
+              <CircleNotch size={20} className={r.state === 'running' ? 'spin' : ''} />
+            )}
+          </span>
+          <span className="result-model">
+            <strong>{r.target.model}</strong>
+            <small>{stateLabel(t, r.state)}</small>
+          </span>
+          <span className="result-label">
+            {(r.probes || []).filter((p) => p.verdict === 'passed').length}/
+            {(r.probes || []).length} {t.probePassed}
+            <small>
+              {(r.probes || []).some((p) => p.needsReview) ? t.needsReview : ''}
+            </small>
+          </span>
+          <CaretDown size={17} className={expanded ? 'rotate' : ''} />
+        </button>
+        {expanded && (
+          <div className="result-body" id={`result-${r.id}`}>
+            {(r.probes || []).map((p, i) => {
+              const reviewLabel =
+                p.review === 'accepted'
+                  ? t.accepted
+                  : p.review === 'rejected'
+                    ? t.rejected
+                    : null;
+              const badge =
+                p.verdict === 'running'
+                  ? stateLabel(t, 'running')
+                  : p.verdict === 'passed'
+                    ? t.probePassed
+                    : p.verdict === 'failed'
+                      ? p.needsReview
+                        ? t.needsReview
+                        : t.probeFailed
+                      : p.verdict === 'manual'
+                        ? reviewLabel || t.probeManual
+                        : t.probeUnavailable;
+              return (
+                <div className="probe-card" key={i}>
+                  <header>
+                    <b>{QUALITY_NAMES[p.id]?.[t === zh ? 'zh' : 'en'] || p.id}</b>
+                    <span className={`status ${p.needsReview ? 'failed' : p.verdict}`}>{badge}</span>
+                  </header>
+                  <div className="probe-metrics">
+                    {p.ttftMs != null && (
+                      <span>
+                        {t.ttft} {p.ttftMs}ms
+                      </span>
+                    )}
+                    {p.tokensPerS != null && (
+                      <span>
+                        {p.tokensPerS} {t.tokensPerS}
+                      </span>
+                    )}
+                    {p.repeatHits != null && (
+                      <span>
+                        {t.repeatHits} {p.repeatHits}/15
+                      </span>
+                    )}
+                    {p.attempt > 1 && (
+                      <span>
+                        {t === zh ? '重试' : 'retry'} #{p.attempt}
+                      </span>
+                    )}
+                  </div>
+                  {p.error && <small className="notice error">{p.error}</small>}
+                  <details>
+                    <summary>{t.answer}</summary>
+                    <pre>{p.answer || p.error || '—'}</pre>
+                  </details>
+                  {p.verdict === 'manual' && onReview && jobId && (
+                    <div className="probe-review">
+                      <button
+                        className="ghost-button"
+                        onClick={() => onReview(jobId, r.id, i, 'accepted')}
+                      >
+                        {t.reviewAccept}
+                      </button>
+                      <button
+                        className="danger-button"
+                        onClick={() => onReview(jobId, r.id, i, 'rejected')}
+                      >
+                        {t.reviewReject}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   return (
     <div className={`result-card ${r.state}`}>
       <button
@@ -1194,6 +1466,7 @@ function Overview({
   history,
   models,
   autorun,
+  qualityPrompts,
   t,
   lang,
   busy,
@@ -1206,32 +1479,39 @@ function Overview({
   history: Job[];
   models: Model[];
   autorun?: Bootstrap['autorun'];
+  qualityPrompts?: Bootstrap['qualityPrompts'];
   t: any;
   lang: 'zh' | 'en';
   busy: boolean;
   expanded: string | null;
   setExpanded: (x: string | null) => void;
-  onRunModel: (model: string) => void;
+  onRunModel: (model: string, questions?: string[]) => void;
   onError: (message: string) => void;
   onSaved: () => void;
 }) {
   const knownIds = useMemo(() => new Set(models.map((m) => m.id)), [models]);
   const rows = useMemo(() => {
-    const map = new Map<string, { job: Job; result: TargetResult }[]>();
+    const map = new Map<
+      string,
+      { fp: { job: Job; result: TargetResult }[]; q: { job: Job; result: TargetResult }[] }
+    >();
     for (const j of history) {
       if (!terminal(j.state)) continue;
+      const isQ = j.kind === 'quality';
       for (const r of j.results) {
-        const list = map.get(r.target.model) || [];
-        list.push({ job: j, result: r });
-        map.set(r.target.model, list);
+        const lists = map.get(r.target.model) || { fp: [], q: [] };
+        (isQ ? lists.q : lists.fp).push({ job: j, result: r });
+        map.set(r.target.model, lists);
       }
     }
     return [...map.entries()]
-      .map(([model, list]) => ({
+      .map(([model, lists]) => ({
         model,
-        current: list[0],
-        previous: list[1]?.result ?? null,
+        current: lists.fp[0] ?? null,
+        previous: lists.fp[1]?.result ?? null,
+        quality: lists.q[0] ?? null,
       }))
+      .filter((row) => row.current || row.quality)
       .sort((a, b) => a.model.localeCompare(b.model));
   }, [history]);
   // Draft stays null until the first edit so late-loading settings show through.
@@ -1239,6 +1519,8 @@ function Overview({
     enabled: boolean;
     intervalMinutes: number;
     modelsText: string;
+    qualityEnabled: boolean;
+    qualityQs: string[];
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -1246,6 +1528,8 @@ function Overview({
     enabled: autorun?.enabled ?? false,
     intervalMinutes: autorun?.intervalMinutes ?? 60,
     modelsText: autorun?.models.join(', ') ?? '',
+    qualityEnabled: autorun?.quality?.enabled ?? false,
+    qualityQs: autorun?.quality?.questions ?? ['milk'],
   };
   const modelIds = view.modelsText
     .split(',')
@@ -1264,6 +1548,7 @@ function Overview({
           intervalMinutes: Number(view.intervalMinutes),
           models: modelIds,
           effort: '',
+          quality: { enabled: view.qualityEnabled, questions: view.qualityQs },
         }),
       });
       setDraft(null);
@@ -1278,6 +1563,18 @@ function Overview({
   };
   const confidence = (r: TargetResult | undefined) =>
     r?.analysis?.results?.[0]?.probability ?? null;
+  // Latest milk-probe outcome for the quality column.
+  const qualityBadge = (q: { job: Job; result: TargetResult } | null) => {
+    if (!q) return null;
+    const probes = q.result.probes || [];
+    const milk = probes.find((p) => p.id === 'milk');
+    if (probes.some((p) => p.needsReview)) return { cls: 'failed', label: t.needsReview };
+    if (milk?.verdict === 'passed') return { cls: 'completed', label: t.probePassed };
+    if (milk?.verdict === 'failed') return { cls: 'failed', label: t.probeFailed };
+    if (probes.some((p) => p.review === 'rejected')) return { cls: 'failed', label: t.rejected };
+    if (probes.length) return { cls: '', label: t.probeManual };
+    return null;
+  };
   return (
     <div className="overview-page">
       <section className="panel autorun-panel">
@@ -1337,6 +1634,53 @@ function Overview({
               </small>
             )}
           </label>
+          <div className="switch-row autorun-quality">
+            <div>
+              <strong>{t.autorunQuality}</strong>
+              <small>
+                {view.qualityQs.length
+                  ? view.qualityQs.join(', ')
+                  : lang === 'zh'
+                    ? '未选择题目'
+                    : 'No questions selected'}
+              </small>
+            </div>
+            <button
+              className={`lib-switch switch ${view.qualityEnabled ? 'on' : ''}`}
+              role="switch"
+              aria-label={t.autorunQuality}
+              aria-checked={view.qualityEnabled}
+              onClick={() => setDraft({ ...view, qualityEnabled: !view.qualityEnabled })}
+            >
+              <i />
+            </button>
+          </div>
+          {view.qualityEnabled && (
+            <div className="quality-picker" role="group" aria-label={t.questions}>
+              {(qualityPrompts || []).map((p) => (
+                <label className="row model model-row" key={p.id}>
+                  <input
+                    type="checkbox"
+                    aria-label={p.name}
+                    checked={view.qualityQs.includes(p.id)}
+                    onChange={() =>
+                      setDraft({
+                        ...view,
+                        qualityQs: view.qualityQs.includes(p.id)
+                          ? view.qualityQs.filter((x) => x !== p.id)
+                          : [...view.qualityQs, p.id],
+                      })
+                    }
+                  />
+                  <span className="who model-name">
+                    <strong className="name">{p.name}</strong>
+                    <small className="sub">{p.id}</small>
+                  </span>
+                  <span className="model-endpoint">{p.automatic ? t.auto : t.manual}</span>
+                </label>
+              ))}
+            </div>
+          )}
           <button
             className="text primary primary-button"
             disabled={
@@ -1354,8 +1698,8 @@ function Overview({
       </section>
       <div className="list history-list overview-list">
         {rows.length ? (
-          rows.map(({ model, current, previous }) => {
-            const r = current.result;
+          rows.map(({ model, current, previous, quality }) => {
+            const r = current?.result;
             const conf = confidence(r);
             const prevConf = confidence(previous);
             const trend =
@@ -1366,8 +1710,12 @@ function Overview({
                   : conf - prevConf < -0.02
                     ? 'down'
                     : 'flat';
-            const ttft = avgNum(r.samples.map((s) => s.first_byte_ms));
-            const tokps = avgNum(r.samples.map((s) => s.tokens_per_s));
+            const ttft = r ? avgNum(r.samples.map((s) => s.first_byte_ms)) : null;
+            const tokps = r ? avgNum(r.samples.map((s) => s.tokens_per_s)) : null;
+            const qBadge = qualityBadge(quality);
+            const qProbes = quality?.result.probes || [];
+            const qTtft = avgNum(qProbes.map((p) => p.ttftMs));
+            const qTokps = avgNum(qProbes.map((p) => p.tokensPerS));
             return (
               <div className="overview-row" key={model}>
                 <div className="overview-summary">
@@ -1378,23 +1726,41 @@ function Overview({
                   >
                     <span className="result-model">
                       <strong>{model}</strong>
-                      <small>{new Date(current.job.createdAt).toLocaleString()}</small>
-                    </span>
-                    <span className="result-label">
-                      {r.analysis?.prediction_name || stateLabel(t, r.state)}
                       <small>
-                        {r.state === 'completed' && r.error
-                          ? r.error
-                          : r.state === 'completed'
-                            ? stateLabel(t, r.analysis?.decision || r.state)
-                            : stateLabel(t, r.state)}
+                        {r
+                          ? new Date(current!.job.createdAt).toLocaleString()
+                          : quality
+                            ? `${t.quality} · ${new Date(quality.job.createdAt).toLocaleString()}`
+                            : t.noData}
                       </small>
                     </span>
+                    <span className="result-label">
+                      {r
+                        ? r.analysis?.prediction_name || stateLabel(t, r.state)
+                        : '—'}
+                      <small>
+                        {r
+                          ? r.state === 'completed' && r.error
+                            ? r.error
+                            : r.state === 'completed'
+                              ? stateLabel(t, r.analysis?.decision || r.state)
+                              : stateLabel(t, r.state)
+                          : t.noData}
+                      </small>
+                    </span>
+                    {qBadge && (
+                      <span className={`overview-metric quality-badge ${qBadge.cls}`}>
+                        {t.quality} · {qBadge.label}
+                      </span>
+                    )}
+                    {!qBadge && quality && (
+                      <span className="overview-metric">{t.quality} · {t.probeManual}</span>
+                    )}
                     <span className="overview-metric" title={t.ttft}>
-                      {t.ttft} {metric(ttft, 0, 'ms')}
+                      {t.ttft} {metric(r ? ttft : qTtft, 0, 'ms')}
                     </span>
                     <span className="overview-metric" title={t.tokensPerS}>
-                      {t.tokensPerS} {metric(tokps, 0)}
+                      {t.tokensPerS} {metric(r ? tokps : qTokps, 0)}
                     </span>
                     <span
                       className={`overview-metric trend-${trend || 'none'}`}
@@ -1422,15 +1788,39 @@ function Overview({
                     <Play size={14} weight="fill" />
                     {t.runNow}
                   </button>
+                  <button
+                    className="ghost-button overview-run"
+                    disabled={busy}
+                    title={t.qualityMode}
+                    onClick={() => onRunModel(model, ['milk'])}
+                  >
+                    <Play size={14} weight="fill" />
+                    {t.qualityTab}
+                  </button>
                 </div>
                 {expanded === model && (
-                  <ResultRow
-                    r={r}
-                    demo={current.job.demo}
-                    t={t}
-                    expanded
-                    toggle={() => setExpanded(null)}
-                  />
+                  <>
+                    {quality && (
+                      <ResultRow
+                        r={quality.result}
+                        demo={quality.job.demo}
+                        t={t}
+                        kind="quality"
+                        jobId={quality.job.id}
+                        expanded
+                        toggle={() => setExpanded(null)}
+                      />
+                    )}
+                    {r && (
+                      <ResultRow
+                        r={r}
+                        demo={current!.job.demo}
+                        t={t}
+                        expanded
+                        toggle={() => setExpanded(null)}
+                      />
+                    )}
+                  </>
                 )}
               </div>
             );
