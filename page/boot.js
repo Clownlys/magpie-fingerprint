@@ -1,7 +1,7 @@
 (async () => {
   const theme = await window.magpie?.ready;
   const config = (await window.magpie?.options?.get?.()) || {};
-  const port = Number(config.port || 3488);
+  const port = Number(config.port || 3489);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('Invalid Fingerprint service port.');
   let service = window.magpie?.service;

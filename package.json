@@ -35,7 +35,7 @@
       },
       "file": "page/index.html",
       "service": {
-        "port": 3488,
+        "port": 3489,
         "option": "port"
       }
     },
@@ -50,7 +50,7 @@
       }
     ],
     "options": {
-      "port": 3488,
+      "port": 3489,
       "autoIntervalMinutes": 0,
       "autoModels": "",
       "autoEffort": ""
