@@ -33,6 +33,27 @@ authentication.
   `nextRunAt` after restart. Manifest options `autoIntervalMinutes`,
   `autoModels`, and `autoEffort` provide the defaults.
 
+## Quality probes (degradation quick-check)
+
+Combined with the probe bank from
+[magpie-intelligence-check](https://github.com/mu-zi-lee/magpie-intelligence-check) (MIT),
+the detect tab gains a "Quality probes" mode:
+
+- **7 behavioral probes**: milk reasoning (auto-graded, expected 46.24 inches),
+  verbatim repeat (coverage heuristic), Japan-PM / person knowledge
+  (freshness), HTML / SVG / map (generation capability).
+- **Upstream grading rules**: milk auto passes/fails, one independent retest on
+  failure, then "needs review"; manual questions accept/reject human review
+  persisted through `POST /api/jobs/:id/review`.
+- **Every probe records TTFT and tokens/s** like fingerprint samples.
+- **Scheduled cycles can include quality probes**: enable "Scheduled quality
+  probes" in the overview tab and pick questions (milk by default).
+- **Dual-signal overview rows**: each model shows its fingerprint verdict and
+  quality status side by side, with separate run-now buttons.
+
+Probe answers are shown as text only — generated code is never executed; verdicts
+are performance clues, not identity authentication.
+
 ## Install from GitHub
 
 This repository ships its built `dist/` files. In Magpie, install the GitHub

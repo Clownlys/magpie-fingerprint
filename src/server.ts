@@ -606,7 +606,12 @@ export async function startServer(input: Options = {}) {
     session: string,
     controller: AbortController,
     onDelta: (answer: string) => void,
-  ): Promise<{ answer: string; ttftMs: number | null; genMs: number | null; tokensPerS: number | null }> => {
+  ): Promise<{
+    answer: string;
+    ttftMs: number | null;
+    genMs: number | null;
+    tokensPerS: number | null;
+  }> => {
     const startedAt = Date.now();
     const upstream = await fetch(`${gateway.url}/v1/chat/completions`, {
       method: 'POST',
@@ -793,8 +798,7 @@ export async function startServer(input: Options = {}) {
       clearTimeout(timer);
       active.delete(job.id);
       for (const r of job.results)
-        for (const p of r.probes || [])
-          if (p.verdict === 'running') p.verdict = 'unavailable';
+        for (const p of r.probes || []) if (p.verdict === 'running') p.verdict = 'unavailable';
       await persist(job);
     }
   }
@@ -919,8 +923,7 @@ export async function startServer(input: Options = {}) {
                       ? body.probeIndex!
                       : -1
                   ];
-                if (!probe)
-                  return json({ error: 'Probe not found' }, 404, cors);
+                if (!probe) return json({ error: 'Probe not found' }, 404, cors);
                 if (body.review !== 'accepted' && body.review !== 'rejected')
                   return json({ error: 'review must be accepted or rejected' }, 400, cors);
                 probe.review = body.review;

@@ -833,121 +833,122 @@ function App() {
                           <strong className="name">{p.name}</strong>
                           <small className="sub">{p.id}</small>
                         </span>
-                        <span className="model-endpoint">
-                          {p.automatic ? t.auto : t.manual}
-                        </span>
+                        <span className="model-endpoint">{p.automatic ? t.auto : t.manual}</span>
                       </label>
                     ))}
                   </div>
                 )}
                 {detectMode === 'fingerprint' && (
                   <>
-                <div className="two-col">
-                  <label>
-                    {t.protocol}
-                    <select value={config.api} onChange={(e) => setField('api', e.target.value)}>
-                      <option value="auto">Auto</option>
-                      <option value="chat_completions">chat_completions</option>
-                      <option value="responses">responses</option>
-                      <option value="messages">messages</option>
-                    </select>
-                  </label>
-                  <label>
-                    {t.effort}
-                    <select value={effort} onChange={(e) => setField('effort', e.target.value)}>
-                      <option value="">Default</option>
-                      {effortChoices.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="switch-row">
-                  <div>
-                    <strong>{lang === 'zh' ? '完整样本' : 'Complete samples'}</strong>
-                    <small>
-                      {lang === 'zh' ? '仅接受完整的 3 条采样' : 'Require all three samples'}
-                    </small>
-                  </div>
-                  <button
-                    className={`lib-switch switch ${config.strict ? 'on' : ''}`}
-                    role="switch"
-                    aria-label={t.strict}
-                    aria-checked={config.strict}
-                    onClick={() => setField('strict', !config.strict)}
-                  >
-                    <i />
-                  </button>
-                </div>
-                <button
-                  className="advanced-toggle"
-                  aria-expanded={showAdvanced}
-                  aria-controls="run-advanced"
-                  onClick={() => setShowAdvanced(!showAdvanced)}
-                >
-                  {showAdvanced ? '−' : '+'}{' '}
-                  {lang === 'zh' ? '高级并行与超时' : 'Concurrency & deadline'}
-                </button>
-                {showAdvanced && (
-                  <div className="advanced" id="run-advanced">
-                    <label>
-                      {t.tier}
-                      <select
-                        value={config.serviceTier}
-                        onChange={(e) => setField('serviceTier', e.target.value)}
-                      >
-                        <option value="default">Default</option>
-                        <option value="flex">Flex</option>
-                        <option value="fast">Fast</option>
-                        <option value="ultrafast">Ultra-fast</option>
-                      </select>
-                    </label>
-                    <div className="three-col">
+                    <div className="two-col">
                       <label>
-                        {t.targetParallel}
-                        <input
-                          type="number"
-                          min="1"
-                          max="3"
-                          aria-invalid={!integerInRange(config.targetParallel, 1, 3)}
-                          value={config.targetParallel}
-                          onChange={(e) => setField('targetParallel', e.target.value)}
-                        />
+                        {t.protocol}
+                        <select
+                          value={config.api}
+                          onChange={(e) => setField('api', e.target.value)}
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="chat_completions">chat_completions</option>
+                          <option value="responses">responses</option>
+                          <option value="messages">messages</option>
+                        </select>
                       </label>
                       <label>
-                        {t.sampleParallel}
-                        <input
-                          type="number"
-                          min="1"
-                          max="3"
-                          aria-invalid={!integerInRange(config.sampleParallel, 1, 3)}
-                          value={config.sampleParallel}
-                          onChange={(e) => setField('sampleParallel', e.target.value)}
-                        />
-                      </label>
-                      <label>
-                        {t.deadline}
-                        <input
-                          type="number"
-                          min="10"
-                          max="900"
-                          aria-invalid={!integerInRange(config.deadlineSeconds, 10, 900)}
-                          value={config.deadlineSeconds}
-                          onChange={(e) => setField('deadlineSeconds', e.target.value)}
-                        />
+                        {t.effort}
+                        <select value={effort} onChange={(e) => setField('effort', e.target.value)}>
+                          <option value="">Default</option>
+                          {effortChoices.map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                     </div>
-                    {!configValid && (
-                      <p className="muted-line" role="alert">
-                        {lang === 'zh'
-                          ? '并行数须为 1–3 的整数，超时须为 10–900 的整数秒。'
-                          : 'Parallelism must be an integer from 1–3; deadline must be 10–900 whole seconds.'}
-                      </p>
+                    <div className="switch-row">
+                      <div>
+                        <strong>{lang === 'zh' ? '完整样本' : 'Complete samples'}</strong>
+                        <small>
+                          {lang === 'zh' ? '仅接受完整的 3 条采样' : 'Require all three samples'}
+                        </small>
+                      </div>
+                      <button
+                        className={`lib-switch switch ${config.strict ? 'on' : ''}`}
+                        role="switch"
+                        aria-label={t.strict}
+                        aria-checked={config.strict}
+                        onClick={() => setField('strict', !config.strict)}
+                      >
+                        <i />
+                      </button>
+                    </div>
+                    <button
+                      className="advanced-toggle"
+                      aria-expanded={showAdvanced}
+                      aria-controls="run-advanced"
+                      onClick={() => setShowAdvanced(!showAdvanced)}
+                    >
+                      {showAdvanced ? '−' : '+'}{' '}
+                      {lang === 'zh' ? '高级并行与超时' : 'Concurrency & deadline'}
+                    </button>
+                    {showAdvanced && (
+                      <div className="advanced" id="run-advanced">
+                        <label>
+                          {t.tier}
+                          <select
+                            value={config.serviceTier}
+                            onChange={(e) => setField('serviceTier', e.target.value)}
+                          >
+                            <option value="default">Default</option>
+                            <option value="flex">Flex</option>
+                            <option value="fast">Fast</option>
+                            <option value="ultrafast">Ultra-fast</option>
+                          </select>
+                        </label>
+                        <div className="three-col">
+                          <label>
+                            {t.targetParallel}
+                            <input
+                              type="number"
+                              min="1"
+                              max="3"
+                              aria-invalid={!integerInRange(config.targetParallel, 1, 3)}
+                              value={config.targetParallel}
+                              onChange={(e) => setField('targetParallel', e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            {t.sampleParallel}
+                            <input
+                              type="number"
+                              min="1"
+                              max="3"
+                              aria-invalid={!integerInRange(config.sampleParallel, 1, 3)}
+                              value={config.sampleParallel}
+                              onChange={(e) => setField('sampleParallel', e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            {t.deadline}
+                            <input
+                              type="number"
+                              min="10"
+                              max="900"
+                              aria-invalid={!integerInRange(config.deadlineSeconds, 10, 900)}
+                              value={config.deadlineSeconds}
+                              onChange={(e) => setField('deadlineSeconds', e.target.value)}
+                            />
+                          </label>
+                        </div>
+                        {!configValid && (
+                          <p className="muted-line" role="alert">
+                            {lang === 'zh'
+                              ? '并行数须为 1–3 的整数，超时须为 10–900 的整数秒。'
+                              : 'Parallelism must be an integer from 1–3; deadline must be 10–900 whole seconds.'}
+                          </p>
+                        )}
+                      </div>
                     )}
-                  </div>
-                )}
                   </>
                 )}
                 <div className="run-footer">
@@ -1025,9 +1026,7 @@ function JobView({
   const done = job.results.filter((r) => r.state === 'completed').length;
   const isQuality = job.kind === 'quality';
   const finishedSamples = isQuality
-    ? job.results
-        .flatMap((r) => r.probes || [])
-        .filter((p) => p.verdict !== 'running').length
+    ? job.results.flatMap((r) => r.probes || []).filter((p) => p.verdict !== 'running').length
     : job.results
         .flatMap((r) => r.samples)
         .filter((s) => !['queued', 'waiting', 'streaming'].includes(s.state)).length;
@@ -1082,8 +1081,14 @@ function JobView({
       <div className="result-meta">
         <span>
           {finishedSamples}/{isQuality ? probeTotal : total * 3}{' '}
-          {t === zh ? (isQuality ? '条探针已结束' : '条采样已结束') : isQuality ? 'probes finished' : 'samples finished'} ·{' '}
-          {done}/{total} {t === zh ? '个模型完成' : 'models completed'}
+          {t === zh
+            ? isQuality
+              ? '条探针已结束'
+              : '条采样已结束'
+            : isQuality
+              ? 'probes finished'
+              : 'samples finished'}{' '}
+          · {done}/{total} {t === zh ? '个模型完成' : 'models completed'}
         </span>
         <span>
           {job.demo && <b className="demo-chip">{t.demo}</b>}
@@ -1109,19 +1114,19 @@ function JobView({
         </div>
       )}
       {!isQuality && (
-      <details className="challenge-details">
-        <summary>
-          {t === zh ? '本批次共享的 3 个挑战' : 'Three challenges shared across this batch'}
-        </summary>
-        {job.challenges.map((c, i) => (
-          <div key={c.id}>
-            <b>
-              {i + 1} · {c.expected_count} {t === zh ? '个数字' : 'numbers'}
-            </b>
-            <p>{c.prompt}</p>
-          </div>
-        ))}
-      </details>
+        <details className="challenge-details">
+          <summary>
+            {t === zh ? '本批次共享的 3 个挑战' : 'Three challenges shared across this batch'}
+          </summary>
+          {job.challenges.map((c, i) => (
+            <div key={c.id}>
+              <b>
+                {i + 1} · {c.expected_count} {t === zh ? '个数字' : 'numbers'}
+              </b>
+              <p>{c.prompt}</p>
+            </div>
+          ))}
+        </details>
       )}
       {job.results.map((r: TargetResult) => (
         <ResultRow
@@ -1240,9 +1245,7 @@ function ResultRow({
           <span className="result-label">
             {(r.probes || []).filter((p) => p.verdict === 'passed').length}/
             {(r.probes || []).length} {t.probePassed}
-            <small>
-              {(r.probes || []).some((p) => p.needsReview) ? t.needsReview : ''}
-            </small>
+            <small>{(r.probes || []).some((p) => p.needsReview) ? t.needsReview : ''}</small>
           </span>
           <CaretDown size={17} className={expanded ? 'rotate' : ''} />
         </button>
@@ -1250,11 +1253,7 @@ function ResultRow({
           <div className="result-body" id={`result-${r.id}`}>
             {(r.probes || []).map((p, i) => {
               const reviewLabel =
-                p.review === 'accepted'
-                  ? t.accepted
-                  : p.review === 'rejected'
-                    ? t.rejected
-                    : null;
+                p.review === 'accepted' ? t.accepted : p.review === 'rejected' ? t.rejected : null;
               const badge =
                 p.verdict === 'running'
                   ? stateLabel(t, 'running')
@@ -1271,7 +1270,9 @@ function ResultRow({
                 <div className="probe-card" key={i}>
                   <header>
                     <b>{QUALITY_NAMES[p.id]?.[t === zh ? 'zh' : 'en'] || p.id}</b>
-                    <span className={`status ${p.needsReview ? 'failed' : p.verdict}`}>{badge}</span>
+                    <span className={`status ${p.needsReview ? 'failed' : p.verdict}`}>
+                      {badge}
+                    </span>
                   </header>
                   <div className="probe-metrics">
                     {p.ttftMs != null && (
@@ -1735,9 +1736,7 @@ function Overview({
                       </small>
                     </span>
                     <span className="result-label">
-                      {r
-                        ? r.analysis?.prediction_name || stateLabel(t, r.state)
-                        : '—'}
+                      {r ? r.analysis?.prediction_name || stateLabel(t, r.state) : '—'}
                       <small>
                         {r
                           ? r.state === 'completed' && r.error
@@ -1754,7 +1753,9 @@ function Overview({
                       </span>
                     )}
                     {!qBadge && quality && (
-                      <span className="overview-metric">{t.quality} · {t.probeManual}</span>
+                      <span className="overview-metric">
+                        {t.quality} · {t.probeManual}
+                      </span>
                     )}
                     <span className="overview-metric" title={t.ttft}>
                       {t.ttft} {metric(r ? ttft : qTtft, 0, 'ms')}

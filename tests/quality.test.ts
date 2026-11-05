@@ -66,7 +66,9 @@ test('autorun accepts and validates the quality settings', () => {
   })!;
   expect(next.quality).toEqual({ enabled: true, questions: ['milk', 'svg'] });
   expect(scheduleAutoRun(next).nextRunAt).toBeTruthy(); // Quality-only cycles schedule.
-  expect(scheduleAutoRun({ ...next, quality: { enabled: false, questions: [] } }).nextRunAt).toBeUndefined();
+  expect(
+    scheduleAutoRun({ ...next, quality: { enabled: false, questions: [] } }).nextRunAt,
+  ).toBeUndefined();
 });
 test('bootstrap exposes the probe inventory', async () => {
   const boot = await (await api('bootstrap')).json();
